@@ -27,6 +27,7 @@ from contextlib import asynccontextmanager
 
 
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 import uvicorn
 from utils.mock_llm import ask
 
@@ -90,11 +91,27 @@ def root():
     return {"message": "AI Agent with health checks!"}
 
 
+class AskRequest(BaseModel):
+    question: str
+
 @app.post("/ask")
-async def ask_agent(question: str):
-    if not _is_ready:
-        raise HTTPException(503, "Agent not ready")
-    return {"answer": ask(question)}
+async def ask_agent(req: AskRequest):
+    """
+    Endpoint xử lý câu hỏi.
+    Giả lập một tác vụ nặng (5 giây) để test graceful shutdown.
+    """
+    logger.info(f"Processing question: {req.question}")
+    
+    # 🕵️‍♂️ GIẢ LẬP TÁC VỤ NẶNG:
+    # Nếu bạn tắt app trong lúc đang sleep, app CHUẨN sẽ đợi hết 5s mới tắt.
+    import asyncio
+    await asyncio.sleep(5) 
+    
+    return {
+        "question": req.question,
+        "answer": ask(req.question),
+        "note": "Request completed successfully even during shutdown!"
+    }
 
 
 # ──────────────────────────────────────────────────────────
