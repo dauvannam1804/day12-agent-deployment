@@ -38,6 +38,13 @@
 | **Cách chạy app** | `uvicorn.run(app)`. | `uvicorn.run("app:app")`. | Hỗ trợ tính năng Reload và Multi-processing chuyên nghiệp. |
 | **Validation** | Không có. | Đọc metadata từ `settings`. | Đảm bảo các tham số cấu hình luôn đúng kiểu dữ liệu trước khi chạy. |
 
+###  Checkpoint 1
+
+- [x] Hiểu tại sao hardcode secrets là nguy hiểm
+- [x] Biết cách dùng environment variables
+- [x] Hiểu vai trò của health check endpoint
+- [x] Biết graceful shutdown là gì
+
 
 ## Part 2: Docker
 
@@ -176,6 +183,13 @@ my-agent:develop   a301b4e4974c       1.15GB            0B
   # Output: 
   {"answer":"Tôi là AI agent được deploy lên cloud. Câu hỏi của bạn đã được nhận."}
   ```
+###  Checkpoint 2
+
+- [x] Hiểu cấu trúc Dockerfile
+- [x] Biết lợi ích của multi-stage builds
+- [x] Hiểu Docker Compose orchestration
+- [x] Biết cách debug container (`docker logs`, `docker exec`)
+
 
 
 ## Part 3: Cloud Deployment
@@ -257,6 +271,30 @@ cd ../render
 
 **Nhiệm vụ:** So sánh `render.yaml` với `railway.toml`. Khác nhau gì?
 
+| Đặc điểm | `render.yaml` (Render Blueprints) | `railway.toml` (Railway Service Config) |
+| :--- | :--- | :--- |
+| **Quy mô** | **Infrastructure as Code (IaC)** - Tầm dự án. | **Service Config** - Tầm dịch vụ lẻ. |
+| **Phạm vi** | Định nghĩa được **nhiều dịch vụ** (Web + Redis + DB). | Tập trung cấu hình cho **duy nhất 1** dịch vụ. |
+| **Vai trò** | "Bản thiết kế" cho toàn bộ hệ thống (Stack). | "Cẩm nang hướng dẫn" cho riêng 1 ứng dụng. |
+| **Cách dùng** | Deploy 1 tập hợp các tài nguyên liên kết nhau. | Tinh chỉnh cách Build và Deploy của 1 Microservice. |
+
+Test Render URL:
+```bash
+# Health check
+curl https://ai-agent-myo8.onrender.com/health
+
+# Output:
+{"status":"ok","uptime_seconds":562.9,"version":"1.0.0","environment":"production",...}
+
+# Agent endpoint
+curl https://ai-agent-myo8.onrender.com/ask -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"question": "Render check"}'
+
+# Output:
+{"question":"Render check","answer":"Đây là câu trả lời từ AI agent (mock). Trong production, đây sẽ là response từ OpenAI/Anthropic.","model":"gpt-4o-mini"}
+```
+
 ###  Exercise 3.3: (Optional) GCP Cloud Run (15 phút)
 
 ```bash
@@ -269,24 +307,561 @@ cd ../production-cloud-run
 
 ###  Checkpoint 3
 
-- [ ] Deploy thành công lên ít nhất 1 platform
-- [ ] Có public URL hoạt động
-- [ ] Hiểu cách set environment variables trên cloud
-- [ ] Biết cách xem logs
+- [x] Deploy thành công lên ít nhất 1 platform (Railway/Render)
+- [x] Có public URL hoạt động
+- [x] Hiểu cách set environment variables trên cloud
+- [x] Biết cách xem logs
 
 ---
 
-## Part 4: API Security
+## Part 4: API Security (40 phút)
 
-### Exercise 4.1-4.3: Test results
-[Paste your test outputs]
+###  Concepts
 
-### Exercise 4.4: Cost guard implementation
-[Explain your approach]
+**Vấn đề:** Public URL = ai cũng gọi được = hết tiền OpenAI.
 
-## Part 5: Scaling & Reliability
+**Giải pháp:**
+1. **Authentication** — Chỉ user hợp lệ mới gọi được
+2. **Rate Limiting** — Giới hạn số request/phút
+3. **Cost Guard** — Dừng khi vượt budget
 
-### Exercise 5.1-5.5: Implementation notes
-[Your explanations and test results]
+###  Exercise 4.1: API Key authentication
+
+**Phân tích mã nguồn:**
+- **API key được check ở đâu?** Được kiểm tra trong hàm `verify_api_key` (dòng 39-54) bằng thư viện `fastapi.security.api_key`. Hàm này được gắn vào endpoint `/ask` thông qua cơ chế `Depends`.
+- **Điều gì xảy ra nếu sai key?**
+    - Nếu thiếu Key: Trả về lỗi `401 Unauthorized`.
+    - Nếu sai Key: Trả về lỗi `403 Forbidden`.
+- **Làm sao rotate key?** Key được quản lý qua biến môi trường `AGENT_API_KEY`. Chỉ cần thay đổi giá trị biến này trên hệ thống (Railway/Render) và restart app mà không cần sửa code.
+
+**Test Results:**
+```bash
+# 1. Không có key (Lỗi 401)
+curl http://localhost:8000/ask -X POST -H "Content-Type: application/json" -d '{"question": "Hello"}'
+
+# Output:
+{"detail":"Missing API key. Include header: X-API-Key: <your-key>"}
+
+# 2. Sai key (Lỗi 403)
+curl http://localhost:8000/ask -X POST -H "X-API-Key: wrong-key" -H "Content-Type: application/json" -d '{"question": "Hello"}'
+# Output: 
+{"detail":"Invalid API key."}
+
+# 3. Đúng key (Thành công - 200)
+curl http://localhost:8000/ask -X POST -H "X-API-Key: demo-key-change-in-production" -H "Content-Type: application/json" -d '{"question": "Hello"}'
+# Output: 
+{"question":"Hello","answer":"Agent đang hoạt động tốt! (mock response) Hỏi thêm câu hỏi đi nhé."}
+```
+
+###  Exercise 4.2: JWT authentication (Advanced)
+
+```bash
+cd ../production
+```
+
+**Nhiệm vụ:** 
+1. Đọc `auth.py` — hiểu JWT flow
+2. Chạy app:
+```bash
+python app.py
+
+#output:
+=== Demo credentials ===
+  student / demo123  (10 req/min, $1/day budget)
+  teacher / teach456 (100 req/min, $1/day budget)
+
+Docs: http://localhost:8000/docs
+
+INFO:     Will watch for changes in these directories: ['/home/namdv/workspace/day12-agent-deployment/04-api-gateway/production']
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [31155] using WatchFiles
+INFO:     Started server process [31157]
+INFO:     Waiting for application startup.
+INFO:app:Security layer initialized
+INFO:     Application startup complete.
+...
+```
+
+3. Lấy token:
+```bash
+curl -X POST http://localhost:8000/auth/token -H "Content-Type: application/json" -d '{"username": "student", "password": "demo123"}'
+
+#output
+{"access_token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJzdHVkZW50Iiwicm9sZSI6InVzZXIiLCJpYXQiOjE3NzY0MTMxMDQsImV4cCI6MTc3NjQxNjcwNH0.QQqVjef-0Df7uBQ9zxLmZ-N847VyqB87zCeDfyG62T4","token_type":"bearer","expires_in_minutes":60,"hint":"Include in header: Authorization: Bearer eyJhbGciOiJIUzI1NiIs..."}
+```
+
+4. Dùng token để gọi API:
+```bash
+TOKEN="<token_từ_bước_3>"
+curl http://localhost:8000/ask -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"question": "Explain JWT"}'
+
+#output
+{"question":"Explain JWT","answer":"Tôi là AI agent được deploy lên cloud. Câu hỏi của bạn đã được nhận.","usage":{"requests_remaining":9,"budget_remaining_usd":1.9e-05}}
+```
+
+###  Exercise 4.3: Rate limiting
+
+**Nhiệm vụ:** Đọc `rate_limiter.py` và trả lời:
+- **Algorithm nào được dùng?** Thuật toán **Sliding Window Counter** (Cửa sổ trượt). Nó ghi lại timestamp của từng request và loại bỏ các request cũ nằm ngoài cửa sổ thời gian 60 giây.
+- **Limit là bao nhiêu requests/minute?** 10 req/phút đối với User thường và 100 req/phút đối với Admin.
+- **Làm sao bypass limit cho admin?** Không bypass hoàn toàn mà thiết lập một "tier" cao hơn. Trong `app.py`, hệ thống kiểm tra trường `role` trong JWT token để quyết định sử dụng bộ giới hạn dành cho User hay Admin.
+
+Test:
+```bash
+# Gọi liên tục 20 lần
+for i in {1..20}; do
+  curl http://localhost:8000/ask -X POST \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"question": "Test '$i'"}'
+  echo ""
+done
+
+#output
+{"question":"Test 1","answer":"Agent đang hoạt động tốt! (mock response) Hỏi thêm câu hỏi đi nhé.","usage":{"requests_remaining":9,"budget_remaining_usd":1.6e-05}}
+{"question":"Test 2","answer":"Agent đang hoạt động tốt! (mock response) Hỏi thêm câu hỏi đi nhé.","usage":{"requests_remaining":8,"budget_remaining_usd":3.2e-05}}
+{"question":"Test 3","answer":"Tôi là AI agent được deploy lên cloud. Câu hỏi của bạn đã được nhận.","usage":{"requests_remaining":7,"budget_remaining_usd":5.1e-05}}
+{"question":"Test 4","answer":"Tôi là AI agent được deploy lên cloud. Câu hỏi của bạn đã được nhận.","usage":{"requests_remaining":6,"budget_remaining_usd":7e-05}}
+{"question":"Test 5","answer":"Đây là câu trả lời từ AI agent (mock). Trong production, đây sẽ là response từ OpenAI/Anthropic.","usage":{"requests_remaining":5,"budget_remaining_usd":9.1e-05}}
+{"question":"Test 6","answer":"Đây là câu trả lời từ AI agent (mock). Trong production, đây sẽ là response từ OpenAI/Anthropic.","usage":{"requests_remaining":4,"budget_remaining_usd":0.000112}}
+{"question":"Test 7","answer":"Agent đang hoạt động tốt! (mock response) Hỏi thêm câu hỏi đi nhé.","usage":{"requests_remaining":3,"budget_remaining_usd":0.000128}}
+{"question":"Test 8","answer":"Agent đang hoạt động tốt! (mock response) Hỏi thêm câu hỏi đi nhé.","usage":{"requests_remaining":2,"budget_remaining_usd":0.000144}}
+{"question":"Test 9","answer":"Tôi là AI agent được deploy lên cloud. Câu hỏi của bạn đã được nhận.","usage":{"requests_remaining":1,"budget_remaining_usd":0.000163}}
+{"question":"Test 10","answer":"Đây là câu trả lời từ AI agent (mock). Trong production, đây sẽ là response từ OpenAI/Anthropic.","usage":{"requests_remaining":0,"budget_remaining_usd":0.000184}}
+{"detail":{"error":"Rate limit exceeded","limit":10,"window_seconds":60,"retry_after_seconds":59}}
+{"detail":{"error":"Rate limit exceeded","limit":10,"window_seconds":60,"retry_after_seconds":59}}
+{"detail":{"error":"Rate limit exceeded","limit":10,"window_seconds":60,"retry_after_seconds":59}}
+{"detail":{"error":"Rate limit exceeded","limit":10,"window_seconds":60,"retry_after_seconds":59}}
+{"detail":{"error":"Rate limit exceeded","limit":10,"window_seconds":60,"retry_after_seconds":59}}
+{"detail":{"error":"Rate limit exceeded","limit":10,"window_seconds":60,"retry_after_seconds":59}}
+{"detail":{"error":"Rate limit exceeded","limit":10,"window_seconds":60,"retry_after_seconds":59}}
+{"detail":{"error":"Rate limit exceeded","limit":10,"window_seconds":60,"retry_after_seconds":59}}
+{"detail":{"error":"Rate limit exceeded","limit":10,"window_seconds":60,"retry_after_seconds":59}}
+{"detail":{"error":"Rate limit exceeded","limit":10,"window_seconds":60,"retry_after_seconds":59}}
+```
+
+Quan sát response khi hit limit.
+
+###  Exercise 4.4: Cost guard
+
+**Nhiệm vụ:** Đọc `cost_guard.py` và implement logic:
+
+```python
+def check_budget(user_id: str, estimated_cost: float) -> bool:
+    """
+    Return True nếu còn budget, False nếu vượt.
+    
+    Logic:
+    - Mỗi user có budget $10/tháng
+    - Track spending trong Redis
+    - Reset đầu tháng
+    """
+    # TODO: Implement
+    pass
+```
+
+<details>
+<summary> Solution</summary>
+
+```python
+import redis
+from datetime import datetime
+
+r = redis.Redis()
+
+def check_budget(user_id: str, estimated_cost: float) -> bool:
+    month_key = datetime.now().strftime("%Y-%m")
+    key = f"budget:{user_id}:{month_key}"
+    
+    current = float(r.get(key) or 0)
+    if current + estimated_cost > 10:
+        return False
+    
+    r.incrbyfloat(key, estimated_cost)
+    r.expire(key, 32 * 24 * 3600)  # 32 days
+    return True
+```
+
+</details>
+
+###  Checkpoint 4
+
+- [x] Implement API key authentication
+- [x] Hiểu JWT flow
+- [x] Implement rate limiting
+- [x] Implement cost guard với Redis
 
 ---
+
+## Part 5: Scaling & Reliability (40 phút)
+
+###  Concepts
+
+**Vấn đề:** 1 instance không đủ khi có nhiều users.
+
+**Giải pháp:**
+1. **Stateless design** — Không lưu state trong memory
+2. **Health checks** — Platform biết khi nào restart
+3. **Graceful shutdown** — Hoàn thành requests trước khi tắt
+4. **Load balancing** — Phân tán traffic
+
+###  Exercise 5.1: Health checks
+
+```bash
+cd ../../05-scaling-reliability/develop
+```
+
+**Nhiệm vụ:** Implement 2 endpoints:
+
+```python
+@app.get("/health")
+def health():
+    """Liveness probe — container còn sống không?"""
+    # TODO: Return 200 nếu process OK
+    pass
+
+@app.get("/ready")
+def ready():
+    """Readiness probe — sẵn sàng nhận traffic không?"""
+    # TODO: Check database connection, Redis, etc.
+    # Return 200 nếu OK, 503 nếu chưa ready
+    pass
+```
+
+<details>
+<summary> Solution</summary>
+
+```python
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+@app.get("/ready")
+def ready():
+    try:
+        # Check Redis
+        r.ping()
+        # Check database
+        db.execute("SELECT 1")
+        return {"status": "ready"}
+    except:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not ready"}
+        )
+```
+
+</details>
+
+###  Exercise 5.2: Graceful shutdown
+
+**Nhiệm vụ:** Implement signal handler:
+
+```python
+import signal
+import sys
+
+def shutdown_handler(signum, frame):
+    """Handle SIGTERM from container orchestrator"""
+    # TODO:
+    # 1. Stop accepting new requests
+    # 2. Finish current requests
+    # 3. Close connections
+    # 4. Exit
+    pass
+
+signal.signal(signal.SIGTERM, shutdown_handler)
+```
+
+Test:
+```bash
+python app.py &
+PID=$!
+
+# Gửi request
+curl http://localhost:8000/ask -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"question": "Long task"}' &
+
+# Ngay lập tức kill
+kill -TERM $PID
+
+# Quan sát: Request có hoàn thành không?
+```
+
+**Log thực tế:**
+```bash
+# Terminal 1: App log
+2026-04-17 15:51:49,076 INFO Processing question: Test Graceful Shutdown
+INFO:     Shutting down
+INFO:     Waiting for connections to close. (CTRL+C to force quit)
+INFO:     127.0.0.1:52478 - "POST /ask HTTP/1.1" 200 OK
+2026-04-17 15:51:54,297 INFO 🔄 Graceful shutdown initiated...
+2026-04-17 15:51:54,297 INFO ✅ Shutdown complete
+
+# Terminal 2: Curl output
+{"question":"Test Graceful Shutdown","answer":"...","note":"Request completed successfully even during shutdown!"}
+```
+
+**Kết quả:** Có, request đã hoàn thành 100% với mã trả về 200 OK.
+
+**Phân tích log:**
+- Mặc dù lệnh `kill -TERM` được gửi ngay sau khi request bắt đầu, nhưng Agent không hề bị tắt đột ngột.
+- Uvicorn đã giữ process tồn tại trong trạng thái "Waiting for connections to close" để đợi hàm `ask_agent` xử lý xong (mất 5 giây `asyncio.sleep`).
+- Chỉ sau khi dữ liệu đã được gửi trả về cho Client (lệnh `curl` nhận được JSON), Agent mới thực hiện các bước shutdown cuối cùng và thoát hoàn toàn.
+- **Kết luận:** Hệ thống đã thực hiện đúng cơ chế Graceful Shutdown, giúp tránh tình trạng mất dữ liệu hoặc làm lỗi request của người dùng khi hệ thống cần bảo trì hoặc scale-down.
+
+
+###  Exercise 5.3: Stateless design
+
+```bash
+cd ../production
+```
+
+**Nhiệm vụ:** Refactor code để stateless.
+
+###  Exercise 5.3: Stateless design
+**Nhiệm vụ:** Refactor code để stateless.
+
+**Anti-pattern:**
+```python
+# Mọi thứ lưu trong RAM của 1 instance đơn lẻ
+_memory_store: dict = {}
+
+def save_session(session_id: str, data: dict):
+    # Dữ liệu sẽ mất khi restart server hoặc khi request nhảy sang instance khác
+    _memory_store[f"session:{session_id}"] = data
+```
+
+**Correct:**
+```python
+# Dữ liệu tập trung tại Redis (mọi instance đều truy cập được)
+_redis = redis.from_url(REDIS_URL, decode_responses=True)
+
+def save_session(session_id: str, data: dict):
+    # Dữ liệu tồn tại độc lập với lifecycle của Agent
+    _redis.setex(f"session:{session_id}", 3600, json.dumps(data))
+```
+
+**Phân tích log khởi tạo:**
+```bash
+agent-1  | INFO:app:Starting instance instance-5c83a2
+agent-1  | INFO:app:Storage: Redis ✅
+agent-1  | ✅ Connected to Redis
+```
+=> Chứng tỏ các Agent đã được cấu hình Stateless thành công.
+
+###  Exercise 5.4: Load balancing
+**Nhiệm vụ:** Quan sát Nginx phân tán requests.
+
+**Log hệ thống (`docker compose logs agent`):**
+```bash
+agent-3  | INFO: 172.18.0.6:49034 - "POST /chat HTTP/1.1" 200 OK
+agent-1  | INFO: 172.18.0.6:34296 - "POST /chat HTTP/1.1" 200 OK
+agent-2  | INFO: 172.18.0.6:44242 - "POST /chat HTTP/1.1" 200 OK
+```
+**Quan sát:** Các request từ IP của Nginx (`172.18.0.6`) được luân chuyển đều qua cả 3 container `agent-1`, `agent-2`, `agent-3` theo cơ chế Round Robin.
+
+###  Exercise 5.5: Test stateless
+**Nhiệm vụ:** Kiểm chứng Session được bảo toàn khi đi qua nhiều instance.
+
+**Log chạy `test_stateless.py`:**
+```bash
+============================================================
+Stateless Scaling Demo
+============================================================
+Session ID: 70229f01-c808-4863-98f8-929836cd4767
+
+Request 1: [instance-b98347]
+Request 2: [instance-5c83a2]
+Request 3: [instance-4c143e]
+Request 4: [instance-b98347]
+Request 5: [instance-5c83a2]
+
+------------------------------------------------------------
+Instances used: {'instance-b98347', 'instance-4c143e', 'instance-5c83a2'}
+✅ All requests served despite different instances!
+
+--- Conversation History ---
+Total messages: 10
+...
+✅ Session history preserved across all instances via Redis!
+```
+**Kết luận:** Hệ thống đã đạt trạng thái Stateless hoàn toàn. User có thể tiếp tục cuộc hội thoại mà không bị ngắt quãng dù Load Balancer đẩy họ tới bất kỳ Instance nào.
+
+###  Checkpoint 5
+- [x] Implement health và readiness checks
+- [x] Implement graceful shutdown
+- [x] Refactor code thành stateless
+- [x] Hiểu load balancing với Nginx
+- [x] Test stateless design
+
+---
+
+## Part 6: Final Project (60 phút)
+
+###  Objective
+
+Build một production-ready AI agent từ đầu, kết hợp TẤT CẢ concepts đã học.
+
+###  Requirements
+
+**Functional:**
+- [ ] Agent trả lời câu hỏi qua REST API
+- [ ] Support conversation history
+- [ ] Streaming responses (optional)
+
+**Non-functional:**
+- [ ] Dockerized với multi-stage build
+- [ ] Config từ environment variables
+- [ ] API key authentication
+- [ ] Rate limiting (10 req/min per user)
+- [ ] Cost guard ($10/month per user)
+- [ ] Health check endpoint
+- [ ] Readiness check endpoint
+- [ ] Graceful shutdown
+- [ ] Stateless design (state trong Redis)
+- [ ] Structured JSON logging
+- [ ] Deploy lên Railway hoặc Render
+- [ ] Public URL hoạt động
+
+### 🏗 Architecture
+
+```
+┌─────────────┐
+│   Client    │
+└──────┬──────┘
+       │
+       ▼
+┌─────────────────┐
+│  Nginx (LB)     │
+└──────┬──────────┘
+       │
+       ├─────────┬─────────┐
+       ▼         ▼         ▼
+   ┌──────┐  ┌──────┐  ┌──────┐
+   │Agent1│  │Agent2│  │Agent3│
+   └───┬──┘  └───┬──┘  └───┬──┘
+       │         │         │
+       └─────────┴─────────┘
+                 │
+                 ▼
+           ┌──────────┐
+           │  Redis   │
+           └──────────┘
+```
+
+
+```bash
+# Railway
+railway init
+railway variables set REDIS_URL=...
+railway variables set AGENT_API_KEY=...
+railway up
+railway domain
+```
+
+###  Validation
+
+Chạy script kiểm tra:
+
+```bash
+cd 06-lab-complete
+python check_production_ready.py
+```
+
+```
+# Output
+
+=======================================================
+  Production Readiness Check — Day 12 Lab
+=======================================================
+
+📁 Required Files
+  ✅ Dockerfile exists
+  ✅ docker-compose.yml exists
+  ✅ .dockerignore exists
+  ✅ .env.example exists
+  ✅ requirements.txt exists
+  ✅ railway.toml or render.yaml exists
+
+🔒 Security
+  ✅ .env in .gitignore
+  ✅ No hardcoded secrets in code
+
+🌐 API Endpoints (code check)
+  ✅ /health endpoint defined
+  ✅ /ready endpoint defined
+  ✅ Authentication implemented
+  ✅ Rate limiting implemented
+  ✅ Graceful shutdown (SIGTERM)
+  ✅ Structured logging (JSON)
+
+🐳 Docker
+  ✅ Multi-stage build
+  ✅ Non-root user
+  ✅ HEALTHCHECK instruction
+  ✅ Slim base image
+  ✅ .dockerignore covers .env
+  ✅ .dockerignore covers __pycache__
+
+=======================================================
+  Result: 20/20 checks passed (100%)
+  🎉 PRODUCTION READY! Deploy nào!
+=======================================================
+```
+
+Script sẽ kiểm tra:
+-  Dockerfile exists và valid
+-  Multi-stage build
+-  .dockerignore exists
+-  Health endpoint returns 200
+-  Readiness endpoint returns 200
+-  Auth required (401 without key)
+-  Rate limiting works (429 after limit)
+-  Cost guard works (402 when exceeded)
+-  Graceful shutdown (SIGTERM handled)
+-  Stateless (state trong Redis, không trong memory)
+-  Structured logging (JSON format)
+
+###  Grading Rubric
+
+| Criteria | Points | Description |
+|----------|--------|-------------|
+| **Functionality** | 20 | Agent hoạt động đúng |
+| **Docker** | 15 | Multi-stage, optimized |
+| **Security** | 20 | Auth + rate limit + cost guard |
+| **Reliability** | 20 | Health checks + graceful shutdown |
+| **Scalability** | 15 | Stateless + load balanced |
+| **Deployment** | 10 | Public URL hoạt động |
+| **Total** | 100 | |
+
+---
+
+##  Hoàn Thành!
+
+Bạn đã:
+-  Hiểu sự khác biệt dev vs production
+-  Containerize app với Docker
+-  Deploy lên cloud platform
+-  Bảo mật API
+-  Thiết kế hệ thống scalable và reliable
+
+###  Next Steps
+
+1. **Monitoring:** Thêm Prometheus + Grafana
+2. **CI/CD:** GitHub Actions auto-deploy
+3. **Advanced scaling:** Kubernetes
+4. **Observability:** Distributed tracing với OpenTelemetry
+5. **Cost optimization:** Spot instances, auto-scaling
+
+###  Resources
+
+- [12-Factor App](https://12factor.net/)
+- [Docker Best Practices](https://docs.docker.com/develop/dev-best-practices/)
+- [FastAPI Deployment](https://fastapi.tiangolo.com/deployment/)
+- [Railway Docs](https://docs.railway.app/)
+- [Render Docs](https://render.com/docs)
