@@ -124,7 +124,7 @@ curl https://your-agent.railway.app/ask -X POST \
 cd ../../04-api-gateway/develop
 
 # Set API key
-export AGENT_API_KEY="my-secret-key"
+export AGENT_API_KEY="demo-key-change-in-production"
 
 # Run
 python app.py
@@ -141,7 +141,7 @@ curl http://localhost:8000/ask -X POST \
 Test with key (should work):
 ```bash
 curl http://localhost:8000/ask -X POST \
-  -H "X-API-Key: my-secret-key" \
+  -H "X-API-Key: demo-key-change-in-production" \
   -H "Content-Type: application/json" \
   -d '{"question": "Hello"}'
 # Expected: 200 OK
